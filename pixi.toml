@@ -1,0 +1,17 @@
+[workspace]
+channels = ["conda-forge"]
+name = "codex-linux-local"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[dependencies]
+cxx-compiler = "*"
+bzip2 = "*"
+make = "*"
+nodejs = "*"
+openssl = "*"
+p7zip = "*"
+pkg-config = "*"
+python = "*"
+zlib = "*"
+zstd = "*"
