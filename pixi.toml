@@ -5,8 +5,11 @@ platforms = ["linux-64"]
 version = "0.1.0"
 
 [dependencies]
-cxx-compiler = "*"
 bzip2 = "*"
+cmake = "*"
+cxx-compiler = "*"
+git = "*"
+libfuse = "*"
 make = "*"
 nodejs = "*"
 openssl = "*"

@@ -98,7 +98,10 @@ version = "0.1.0"
 
 [dependencies]
 bzip2 = "*"
+cmake = "*"
 cxx-compiler = "*"
+git = "*"
+libfuse = "*"
 make = "*"
 nodejs = "*"
 openssl = "*"
@@ -149,6 +152,31 @@ Extract app resources only:
 
 ```bash
 pixi run 7z x -y -obuild/app build/extract/Codex.img "Codex Installer/Codex.app/Contents/Resources/*"
+```
+
+If `7z l build/extract/Codex.img` only shows `disk image.img`, the DMG contains an APFS volume. Build `apfs-fuse` locally with pixi-managed tools and mount the APFS partition:
+
+```bash
+pixi run git clone --depth 1 https://github.com/sgan81/apfs-fuse.git build/apfs-fuse-src
+pixi run git -C build/apfs-fuse-src submodule update --init --recursive
+
+pixi run cmake -S build/apfs-fuse-src -B build/apfs-fuse-build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+pixi run cmake --build build/apfs-fuse-build --parallel
+
+build/apfs-fuse-build/apfsutil build/extract/Codex.img
+mkdir -p build/apfs-mount
+build/apfs-fuse-build/apfs-fuse -p 0 -v 0 \
+  -o uid=$(id -u),gid=$(id -g) \
+  build/extract/Codex.img build/apfs-mount
+
+mkdir -p "build/app/Codex Installer/Codex.app/Contents"
+rsync -a --delete \
+  "build/apfs-mount/root/Codex.app/Contents/Resources/" \
+  "build/app/Codex Installer/Codex.app/Contents/Resources/"
+
+fusermount3 -u build/apfs-mount
 ```
 
 Expected resources path:
@@ -228,6 +256,34 @@ Verify the app-server subcommand exists:
 
 If the smoke test later reports `unexpected argument 'app-server' found`, the wrong binary was installed. Replace `Resources/codex` with the full `codex-*` CLI release, not `codex-app-server-*`.
 
+## Remove macOS-Only Native Binaries
+
+The extracted bundle includes a `Resources/native/` directory with macOS ARM64 binaries that are never used on Linux:
+
+```text
+Resources/native/
+  bare-modifier-monitor          Mach-O arm64 executable
+  browser-use-peer-authorization.node   Mach-O arm64 bundle
+  devicecheck.node               Mach-O arm64 bundle
+  launch-services-helper         Mach-O arm64 executable
+  remote-control-device-key.node Mach-O arm64 bundle
+  sky.node                       Mach-O arm64 bundle
+  sparkle.node                   Mach-O arm64 bundle
+```
+
+Remove them to save space and avoid confusion:
+
+```bash
+rm -rf "build/app/Codex Installer/Codex.app/Contents/Resources/native"
+```
+
+Verify removal:
+
+```bash
+ls "build/app/Codex Installer/Codex.app/Contents/Resources/native" 2>&1
+# Expected: ls: cannot access '.../native': No such file or directory
+```
+
 ## Rebuild Native Modules
 
 The packaged `app.asar.unpacked/node_modules` often contains compiled `.node` files but lacks enough source files for direct `node-gyp` rebuilds. The robust path is to create a clean temporary npm workspace with the exact package versions from `package.json`.
@@ -264,6 +320,30 @@ pixi run npx electron-rebuild --version 41.2.0 --arch x64 --only better-sqlite3,
 ```
 
 For ARM64 Linux use `--arch arm64`.
+
+For Electron `42.0.1`, `better-sqlite3@12.9.0`/`12.10.0` may fail to compile against the newer V8 external pointer API. Apply this minimal rebuild-workspace patch before rerunning `electron-rebuild`:
+
+```diff
+--- a/node_modules/better-sqlite3/src/util/macros.cpp
++++ b/node_modules/better-sqlite3/src/util/macros.cpp
+@@
+-#define OnlyAddon static_cast<Addon*>(info.Data().As<v8::External>()->Value())
++#define OnlyAddon static_cast<Addon*>(info.Data().As<v8::External>()->Value(v8::kExternalPointerTypeTagDefault))
+--- a/node_modules/better-sqlite3/src/better_sqlite3.cpp
++++ b/node_modules/better-sqlite3/src/better_sqlite3.cpp
+@@
+-	v8::Local<v8::External> data = v8::External::New(isolate, addon);
++	v8::Local<v8::External> data = v8::External::New(isolate, addon, v8::kExternalPointerTypeTagDefault);
+--- a/node_modules/better-sqlite3/src/util/helpers.cpp
++++ b/node_modules/better-sqlite3/src/util/helpers.cpp
+@@
+-		func,
+-		0,
++		func,
++		nullptr,
+```
+
+If the exact bundled `better-sqlite3` version still fails, try the latest compatible patch release in the same major line and copy only the rebuilt `.node` binary back into the app.
 
 Copy rebuilt binaries into the app:
 
@@ -309,6 +389,12 @@ Install:
 
 ```bash
 pixi run npm install
+```
+
+If `node_modules/electron/dist/electron` is missing after install, an environment setting may have skipped Electron's binary download. Run:
+
+```bash
+env -u ELECTRON_SKIP_BINARY_DOWNLOAD pixi run node node_modules/electron/install.js
 ```
 
 Verify:
@@ -471,14 +557,14 @@ dpkg-deb --build --root-owner-group "$PACKAGE_ROOT" "$DEB_PATH"
 For the working Pop!_OS/Ubuntu x86_64 package, the result was:
 
 ```text
-dist/codex-app_26.506.31421_amd64.deb
+dist/codex-app_<app-version>_amd64.deb
 ```
 
 Install or reinstall with:
 
 ```bash
-sudo apt install ./dist/codex-app_26.506.31421_amd64.deb
-sudo apt install --reinstall ./dist/codex-app_26.506.31421_amd64.deb
+sudo apt install ./dist/codex-app_<app-version>_amd64.deb
+sudo apt install --reinstall ./dist/codex-app_<app-version>_amd64.deb
 ```
 
 The `_apt` sandbox warning for a local file inside the project directory is usually harmless:
@@ -538,6 +624,8 @@ On Pop!_OS 22.04 x86_64, a successful local conversion used:
 - Codex CLI release `rust-v0.130.0`
 - Full backend target `codex-x86_64-unknown-linux-musl`
 - Native modules rebuilt for Electron `41.2.0` and arch `x64`
+
+For Codex app package version `26.513.31313`, the new DMG used an APFS volume. A successful Pop!_OS 22.04 x86_64 conversion used Electron `42.0.1`, Codex CLI release `rust-v0.131.0`, `better-sqlite3` rebuilt with the V8 external-pointer patch, and produced `dist/codex-app_26.513.31313_amd64.deb`.
 
 The successful smoke test showed:
 

@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
-ROOT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)
+SCRIPT_DIR=$(unset CDPATH; cd -- "$(dirname -- "$0")" && pwd -P)
+ROOT_DIR=$(unset CDPATH; cd -- "$SCRIPT_DIR/.." && pwd -P)
 
-APP_NAME="Codex"
 PACKAGE_NAME="codex-app"
-VERSION="${CODEX_DEB_VERSION:-26.506.31421}"
+VERSION="${CODEX_DEB_VERSION:-26.513.31313}"
 ARCH="${CODEX_DEB_ARCH:-amd64}"
 
 RESOURCES_SRC="$ROOT_DIR/build/app/Codex Installer/Codex.app/Contents/Resources"
@@ -46,6 +45,7 @@ mkdir -p \
 rsync -a --delete "$ELECTRON_DIST_SRC/" "$INSTALL_ROOT/electron/"
 rsync -a --delete \
   --exclude 'codex.macos-arm64.backup' \
+  --exclude 'native' \
   "$RESOURCES_SRC/" "$INSTALL_ROOT/resources/"
 
 chmod -R u+rwX,go+rX "$INSTALL_ROOT"
