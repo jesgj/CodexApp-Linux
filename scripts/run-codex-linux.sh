@@ -10,4 +10,4 @@ ELECTRON_BIN="$ROOT_DIR/build/electron-runtime/node_modules/electron/dist/electr
 export CODEX_CLI_PATH="$RESOURCES_DIR/codex"
 export ELECTRON_RENDERER_URL="file://$ASAR_PATH/webview/index.html"
 
-exec "$ELECTRON_BIN" "$ASAR_PATH" "$@"
+exec "$ELECTRON_BIN" "$ASAR_PATH" --disable-gpu-compositing "$@"

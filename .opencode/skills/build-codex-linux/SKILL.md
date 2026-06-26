@@ -420,7 +420,7 @@ ELECTRON_BIN="$ROOT_DIR/build/electron-runtime/node_modules/electron/dist/electr
 export CODEX_CLI_PATH="$RESOURCES_DIR/codex"
 export ELECTRON_RENDERER_URL="file://$ASAR_PATH/webview/index.html"
 
-exec "$ELECTRON_BIN" "$ASAR_PATH" "$@"
+exec "$ELECTRON_BIN" "$ASAR_PATH" --disable-gpu-compositing "$@"
 ```
 
 Make it executable:
@@ -432,6 +432,16 @@ chmod +x scripts/run-codex-linux.sh
 `ELECTRON_RENDERER_URL` matters because running `electron app.asar` directly can leave `app.isPackaged === false`, making the app try to load a Vite dev server. Point it at the renderer inside the ASAR.
 
 `CODEX_CLI_PATH` matters because the app-server launcher can discover or prefer the wrong `codex` binary if the environment or resources path is not what the macOS bundle expected.
+
+## Linux Rendering Patch
+
+On X11 sessions without a compositor, transparent Electron windows can render the converted app blurry. Patch the ASAR before local smoke testing or packaging:
+
+```bash
+scripts/patch-linux-rendering.sh
+```
+
+The patch makes Linux use opaque window backgrounds in the minified main process bundle and disables transparent sub-windows on Linux. The Debian package script applies this patch by default; set `CODEX_PATCH_LINUX_RENDERING=0` only when intentionally testing the unpatched upstream window behavior.
 
 ## Smoke Test
 
@@ -506,7 +516,7 @@ ASAR_PATH="$RESOURCES_DIR/app.asar"
 export CODEX_CLI_PATH="$RESOURCES_DIR/codex"
 export ELECTRON_RENDERER_URL="file://$ASAR_PATH/webview/index.html"
 
-exec "$APP_DIR/electron/electron" "$ASAR_PATH" "$@"
+exec "$APP_DIR/electron/electron" "$ASAR_PATH" --disable-gpu-compositing "$@"
 ```
 
 The desktop entry should call `codex-app`, not `codex`:
@@ -608,6 +618,7 @@ Before reporting success, verify:
 - `file better_sqlite3.node` reports Linux ELF shared object.
 - `file pty.node` reports Linux ELF shared object.
 - `electron --version` matches the app bundle’s Electron version.
+- `scripts/patch-linux-rendering.sh` was applied, unless intentionally skipped.
 - `timeout 12s scripts/run-codex-linux.sh` reaches `outcome=success` for app-server initialization.
 - If building `.deb`, `dpkg-deb --contents dist/codex-app_*.deb` shows `/usr/bin/codex-app`, `/opt/codex-linux/resources/app.asar`, and readable `/opt/codex-linux/resources/` permissions.
 - If installing `.deb`, `codex-app` launches and does not fail with `Unable to find Electron app at /opt/codex-linux/resources/app.asar`.
@@ -626,6 +637,8 @@ On Pop!_OS 22.04 x86_64, a successful local conversion used:
 - Native modules rebuilt for Electron `41.2.0` and arch `x64`
 
 For Codex app package version `26.513.31313`, the new DMG used an APFS volume. A successful Pop!_OS 22.04 x86_64 conversion used Electron `42.0.1`, Codex CLI release `rust-v0.131.0`, `better-sqlite3` rebuilt with the V8 external-pointer patch, and produced `dist/codex-app_26.513.31313_amd64.deb`.
+
+For Codex app package version `26.608.12217`, a successful Pop!_OS 22.04 x86_64 conversion used Electron `42.1.0`, Codex CLI release `rust-v0.139.0`, `better-sqlite3` and `node-pty` rebuilt for Linux, and produced `dist/codex-app_26.608.12217_amd64.deb`. The Linux rendering patch was required to avoid blurry transparent-window rendering on X11 without a compositor.
 
 The successful smoke test showed:
 

@@ -27,13 +27,13 @@ The `.deb` file is not committed to git. It is expected to be downloaded from a 
 Install with:
 
 ```bash
-sudo apt install ./dist/codex-app_26.513.31313_amd64.deb
+sudo apt install ./dist/codex-app_26.608.12217_amd64.deb
 ```
 
 If replacing an older local build:
 
 ```bash
-sudo apt install --reinstall ./dist/codex-app_26.513.31313_amd64.deb
+sudo apt install --reinstall ./dist/codex-app_26.608.12217_amd64.deb
 ```
 
 Launch with:
@@ -60,10 +60,19 @@ scripts/run-codex-linux.sh
 scripts/package-codex-deb.sh
 ```
 
+For X11 sessions without a compositor, patch the converted ASAR before launching locally:
+
+```bash
+scripts/patch-linux-rendering.sh
+```
+
+The Debian packaging script applies this patch automatically by default. Set `CODEX_PATCH_LINUX_RENDERING=0` to skip it.
+
 ## Notes
 
 - `Codex.dmg`, `build/`, `.pixi/`, and `dist/` are intentionally ignored.
 - The package installs as `codex-app` to avoid conflicting with the official `codex` CLI command.
+- The Linux package disables GPU compositing and patches transparent Electron windows to opaque Linux surfaces to avoid blurry rendering on X11 without a compositor.
 - App login/session data is not packaged; users sign in with their own account at runtime.
 - New upstream Codex releases may require changes to Electron version, native module rebuilds, or extraction steps.
 

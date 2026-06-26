@@ -5,8 +5,9 @@ SCRIPT_DIR=$(unset CDPATH; cd -- "$(dirname -- "$0")" && pwd -P)
 ROOT_DIR=$(unset CDPATH; cd -- "$SCRIPT_DIR/.." && pwd -P)
 
 PACKAGE_NAME="codex-app"
-VERSION="${CODEX_DEB_VERSION:-26.513.31313}"
+VERSION="${CODEX_DEB_VERSION:-26.608.12217}"
 ARCH="${CODEX_DEB_ARCH:-amd64}"
+PATCH_LINUX_RENDERING="${CODEX_PATCH_LINUX_RENDERING:-1}"
 
 RESOURCES_SRC="$ROOT_DIR/build/app/Codex Installer/Codex.app/Contents/Resources"
 ELECTRON_DIST_SRC="$ROOT_DIR/build/electron-runtime/node_modules/electron/dist"
@@ -30,6 +31,10 @@ require_path "$RESOURCES_SRC"
 require_path "$ELECTRON_DIST_SRC/electron"
 require_path "$ASAR_PATH"
 require_path "$RESOURCES_SRC/codex"
+
+if [[ "$PATCH_LINUX_RENDERING" != "0" ]]; then
+  "$SCRIPT_DIR/patch-linux-rendering.sh"
+fi
 
 rm -rf "$PACKAGE_ROOT" "$WORK_DIR"
 mkdir -p \
@@ -61,7 +66,7 @@ ASAR_PATH="$RESOURCES_DIR/app.asar"
 export CODEX_CLI_PATH="$RESOURCES_DIR/codex"
 export ELECTRON_RENDERER_URL="file://$ASAR_PATH/webview/index.html"
 
-exec "$APP_DIR/electron/electron" "$ASAR_PATH" "$@"
+exec "$APP_DIR/electron/electron" "$ASAR_PATH" --disable-gpu-compositing "$@"
 LAUNCHER
 chmod 0755 "$PACKAGE_ROOT/usr/bin/codex-app"
 
