@@ -3,38 +3,131 @@ set -euo pipefail
 
 SCRIPT_DIR=$(unset CDPATH; cd -- "$(dirname -- "$0")" && pwd -P)
 ROOT_DIR=$(unset CDPATH; cd -- "$SCRIPT_DIR/.." && pwd -P)
+source "$SCRIPT_DIR/resolve-resources.sh"
 
+ASAR_VERSION="4.2.1"
 PACKAGE_NAME="codex-app"
-VERSION="${CODEX_DEB_VERSION:-26.608.12217}"
-ARCH="${CODEX_DEB_ARCH:-amd64}"
 PATCH_LINUX_RENDERING="${CODEX_PATCH_LINUX_RENDERING:-1}"
-
-RESOURCES_SRC="$ROOT_DIR/build/app/Codex Installer/Codex.app/Contents/Resources"
-ELECTRON_DIST_SRC="$ROOT_DIR/build/electron-runtime/node_modules/electron/dist"
+RESOURCES_SRC=$(resolve_resources_dir "$ROOT_DIR")
 ASAR_PATH="$RESOURCES_SRC/app.asar"
-
+ELECTRON_DIST_SRC="$ROOT_DIR/build/electron-runtime/node_modules/electron/dist"
 BUILD_ROOT="$ROOT_DIR/build/deb-package"
 WORK_DIR="$BUILD_ROOT/work"
-PACKAGE_ROOT="$BUILD_ROOT/${PACKAGE_NAME}_${VERSION}_${ARCH}"
-INSTALL_ROOT="$PACKAGE_ROOT/opt/codex-linux"
 DIST_DIR="$ROOT_DIR/dist"
-DEB_PATH="$DIST_DIR/${PACKAGE_NAME}_${VERSION}_${ARCH}.deb"
+
+fail() {
+  printf '%s\n' "$1" >&2
+  exit 1
+}
 
 require_path() {
   if [[ ! -e "$1" ]]; then
-    printf 'Required path not found: %s\n' "$1" >&2
-    exit 1
+    fail "Required path not found: $1"
   fi
 }
 
-require_path "$RESOURCES_SRC"
-require_path "$ELECTRON_DIST_SRC/electron"
-require_path "$ASAR_PATH"
-require_path "$RESOURCES_SRC/codex"
+run_asar() {
+  pixi run npx --yes "@electron/asar@$ASAR_VERSION" "$@"
+}
 
-if [[ "$PATCH_LINUX_RENDERING" != "0" ]]; then
-  "$SCRIPT_DIR/patch-linux-rendering.sh"
+validate_deb_version() {
+  if [[ ! "$1" =~ ^[0-9A-Za-z][0-9A-Za-z.+:~\-]*$ ]]; then
+    fail "Invalid Debian package version: $1"
+  fi
+}
+
+verify_linux_elf() {
+  local path="$1"
+  local description="$2"
+  local file_type
+
+  file_type=$(file -Lb "$path")
+  if [[ "$file_type" != *ELF* || "$file_type" != *"$ELF_ARCH"* ]]; then
+    fail "$description is not a Linux $ARCH ELF binary: $path ($file_type)"
+  fi
+}
+
+verify_linux_executable() {
+  local path="$1"
+  local description="$2"
+
+  if [[ ! -x "$path" ]]; then
+    fail "$description is not executable: $path"
+  fi
+  verify_linux_elf "$path" "$description"
+}
+
+require_path "$RESOURCES_SRC"
+require_path "$ASAR_PATH"
+require_path "$ELECTRON_DIST_SRC/electron"
+require_path "$RESOURCES_SRC/codex"
+require_path "$RESOURCES_SRC/rg"
+require_path "$RESOURCES_SRC/codex-code-mode-host"
+mkdir -p "$BUILD_ROOT" "$DIST_DIR"
+
+case "$(uname -m)" in
+  x86_64)
+    HOST_ARCH="amd64"
+    ELF_ARCH="x86-64"
+    ;;
+  aarch64)
+    HOST_ARCH="arm64"
+    ELF_ARCH="aarch64"
+    ;;
+  *)
+    fail "Unsupported host architecture: $(uname -m)"
+    ;;
+esac
+
+ARCH="${CODEX_DEB_ARCH:-$HOST_ARCH}"
+if [[ "$ARCH" != "$HOST_ARCH" ]]; then
+  fail "Cross-architecture packaging is not supported: host is $HOST_ARCH, requested $ARCH"
 fi
+
+METADATA_DIR=$(mktemp -d "$BUILD_ROOT/metadata.XXXXXX")
+trap 'rm -rf "$METADATA_DIR"' EXIT
+(
+  cd "$METADATA_DIR"
+  run_asar extract-file "$ASAR_PATH" package.json >/dev/null
+)
+require_path "$METADATA_DIR/package.json"
+
+APP_VERSION=$(node -e 'const pkg = require(process.argv[1]); process.stdout.write(pkg.version)' "$METADATA_DIR/package.json")
+APP_ELECTRON_VERSION=$(node -e 'const pkg = require(process.argv[1]); process.stdout.write(pkg.devDependencies.electron)' "$METADATA_DIR/package.json")
+VERSION="${CODEX_DEB_VERSION:-$APP_VERSION}"
+validate_deb_version "$VERSION"
+
+PACKAGE_ROOT="$BUILD_ROOT/${PACKAGE_NAME}_${VERSION}_${ARCH}"
+INSTALL_ROOT="$PACKAGE_ROOT/opt/codex-linux"
+PACKAGE_ASAR_PATH="$INSTALL_ROOT/resources/app.asar"
+DEB_PATH="$DIST_DIR/${PACKAGE_NAME}_${VERSION}_${ARCH}.deb"
+
+RUNTIME_ELECTRON_VERSION=$("$ELECTRON_DIST_SRC/electron" --version)
+if [[ "$RUNTIME_ELECTRON_VERSION" != "v$APP_ELECTRON_VERSION" ]]; then
+  fail "Electron runtime $RUNTIME_ELECTRON_VERSION does not match app Electron $APP_ELECTRON_VERSION"
+fi
+
+verify_linux_executable "$ELECTRON_DIST_SRC/electron" "Electron runtime"
+verify_linux_executable "$RESOURCES_SRC/codex" "Codex CLI"
+verify_linux_executable "$RESOURCES_SRC/rg" "Ripgrep helper"
+verify_linux_executable "$RESOURCES_SRC/codex-code-mode-host" "Code mode host"
+"$RESOURCES_SRC/codex" app-server --help >/dev/null
+"$RESOURCES_SRC/rg" --version >/dev/null
+"$RESOURCES_SRC/codex-code-mode-host" --help >/dev/null
+
+NATIVE_MODULES=(
+  "$RESOURCES_SRC/app.asar.unpacked/node_modules/better-sqlite3/build/Release/better_sqlite3.node"
+  "$RESOURCES_SRC/app.asar.unpacked/node_modules/node-pty/build/Release/pty.node"
+  "$RESOURCES_SRC/app.asar.unpacked/node_modules/bufferutil/build/Release/bufferutil.node"
+  "$RESOURCES_SRC/app.asar.unpacked/node_modules/utf-8-validate/build/Release/validation.node"
+)
+for native_module in "${NATIVE_MODULES[@]}"; do
+  require_path "$native_module"
+  verify_linux_elf "$native_module" "Native module"
+  if ldd "$native_module" | grep -q 'not found'; then
+    fail "Native module has unresolved dependencies: $native_module"
+  fi
+done
 
 rm -rf "$PACKAGE_ROOT" "$WORK_DIR"
 mkdir -p \
@@ -44,16 +137,28 @@ mkdir -p \
   "$PACKAGE_ROOT/usr/bin" \
   "$PACKAGE_ROOT/usr/share/applications" \
   "$PACKAGE_ROOT/usr/share/icons/hicolor/104x104/apps" \
-  "$DIST_DIR" \
   "$WORK_DIR"
 
 rsync -a --delete "$ELECTRON_DIST_SRC/" "$INSTALL_ROOT/electron/"
 rsync -a --delete \
-  --exclude 'codex.macos-arm64.backup' \
-  --exclude 'native' \
+  --exclude '*.macos-arm64.backup' \
+  --exclude 'native/' \
+  --exclude 'cua_node/' \
+  --exclude 'codex_chronicle' \
   "$RESOURCES_SRC/" "$INSTALL_ROOT/resources/"
 
-chmod -R u+rwX,go+rX "$INSTALL_ROOT"
+if [[ "$PATCH_LINUX_RENDERING" != "0" ]]; then
+  CODEX_RESOURCES_DIR="$INSTALL_ROOT/resources" "$SCRIPT_DIR/patch-linux-rendering.sh"
+fi
+
+if [[ -e "$INSTALL_ROOT/resources/cua_node" || -e "$INSTALL_ROOT/resources/codex_chronicle" ]]; then
+  fail "Unsupported macOS-only resources were included in the Debian package"
+fi
+
+chmod -R u=rwX,go=rX "$INSTALL_ROOT"
+if [[ -f "$INSTALL_ROOT/electron/chrome-sandbox" ]]; then
+  chmod 4755 "$INSTALL_ROOT/electron/chrome-sandbox"
+fi
 
 cat > "$PACKAGE_ROOT/usr/bin/codex-app" <<'LAUNCHER'
 #!/usr/bin/env bash
@@ -70,13 +175,26 @@ exec "$APP_DIR/electron/electron" "$ASAR_PATH" --disable-gpu-compositing "$@"
 LAUNCHER
 chmod 0755 "$PACKAGE_ROOT/usr/bin/codex-app"
 
-(
-  cd "$WORK_DIR"
-  npx --yes asar extract-file "$ASAR_PATH" webview/assets/codex-app-ga-logo--UgmJjKM.png >/dev/null
+mapfile -t ICON_PATHS < <(
+  run_asar list "$PACKAGE_ASAR_PATH" | while IFS= read -r path; do
+    if [[ "$path" =~ ^/webview/assets/codex-app-ga-logo--.+\.png$ ]]; then
+      printf '%s\n' "$path"
+    fi
+  done
 )
-install -m 0644 \
-  "$WORK_DIR/codex-app-ga-logo--UgmJjKM.png" \
-  "$PACKAGE_ROOT/usr/share/icons/hicolor/104x104/apps/codex.png"
+if [[ "${#ICON_PATHS[@]}" -eq 1 ]]; then
+  ICON_ASAR_PATH="${ICON_PATHS[0]#/}"
+  (
+    cd "$WORK_DIR"
+    run_asar extract-file "$PACKAGE_ASAR_PATH" "$ICON_ASAR_PATH" >/dev/null
+  )
+  ICON_SOURCE="$WORK_DIR/$(basename "$ICON_ASAR_PATH")"
+elif [[ "${#ICON_PATHS[@]}" -eq 0 && -f "$INSTALL_ROOT/resources/icon-chatgpt.png" ]]; then
+  ICON_SOURCE="$INSTALL_ROOT/resources/icon-chatgpt.png"
+else
+  fail "Expected exactly one Codex icon asset, found ${#ICON_PATHS[@]}"
+fi
+install -m 0644 "$ICON_SOURCE" "$PACKAGE_ROOT/usr/share/icons/hicolor/104x104/apps/codex.png"
 
 cat > "$PACKAGE_ROOT/usr/share/applications/codex.desktop" <<'DESKTOP'
 [Desktop Entry]
@@ -101,20 +219,20 @@ Installed-Size: $INSTALLED_SIZE
 Maintainer: Local Build <local@example.invalid>
 Depends: libc6, libgtk-3-0, libnss3, libxss1, libasound2, libatk-bridge2.0-0, libdrm2, libgbm1, libx11-xcb1, libxcb-dri3-0, libxcomposite1, libxdamage1, libxrandr2, libcups2, libxkbcommon0, libpango-1.0-0, libcairo2
 Description: OpenAI Codex desktop app for Linux
- Local Linux x86_64 package assembled from the converted Codex Electron app.
+ Local Linux $ARCH package assembled from the converted Codex Electron app.
 CONTROL
 
 cat > "$PACKAGE_ROOT/DEBIAN/postinst" <<'POSTINST'
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ -f /opt/codex-linux/electron/chrome-sandbox ]]; then
-  chown root:root /opt/codex-linux/electron/chrome-sandbox || true
-  chmod 4755 /opt/codex-linux/electron/chrome-sandbox || true
+if [[ -d /opt/codex-linux ]]; then
+  chmod -R u=rwX,go=rX /opt/codex-linux
 fi
 
-if [[ -d /opt/codex-linux ]]; then
-  chmod -R u+rwX,go+rX /opt/codex-linux || true
+if [[ -f /opt/codex-linux/electron/chrome-sandbox ]]; then
+  chown root:root /opt/codex-linux/electron/chrome-sandbox
+  chmod 4755 /opt/codex-linux/electron/chrome-sandbox
 fi
 
 if command -v update-desktop-database >/dev/null 2>&1; then
@@ -141,7 +259,9 @@ POSTRM
 
 chmod 0755 "$PACKAGE_ROOT/DEBIAN/postinst" "$PACKAGE_ROOT/DEBIAN/postrm"
 
-desktop-file-validate "$PACKAGE_ROOT/usr/share/applications/codex.desktop"
+if command -v desktop-file-validate >/dev/null 2>&1; then
+  desktop-file-validate "$PACKAGE_ROOT/usr/share/applications/codex.desktop"
+fi
 dpkg-deb --build --root-owner-group "$PACKAGE_ROOT" "$DEB_PATH"
 
 printf 'Created %s\n' "$DEB_PATH"
